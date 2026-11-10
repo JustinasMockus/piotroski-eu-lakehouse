@@ -17,7 +17,7 @@ The MVP is due by 2026-10-19. It produces a gold table with a Piotroski F-score 
 - [x] README with an architecture diagram, a "how to run" section, a top-10 output sample, known limitations, and links to at least 5 ADRs.
 - [x] A dashboard (Databricks AI/BI) showing the score distribution and DQ failure counts.
 
-**Out of scope for the MVP:** Magic Formula, Altman Z, Beneish M, prices, multi-country, dbt, Terraform, AWS, the rate-limited ticker API. Each one is a post-MVP milestone (last section). Bring anything new in only when the definition of done above is green.
+**Out of scope for the MVP:** Magic Formula, Altman Z, Beneish M, prices, multi-country, dbt, Terraform, AWS, the rate-limited ticker API. Each one is a post-MVP milestone (last section). Bring anything new in only when the definition of done above is green. The MVP is done (v0.1.1); [Sprint v0.2](#sprint-v02-nov-1117-2026) supersedes this list for prices and dbt.
 
 **Realism check:** at 3–5 h/day, a week is about 25–30 hours. That's enough only if silver mapping is time-boxed. Mapping IFRS tags to Piotroski inputs is where the week will slip (day 4). The rule: map the top concepts, mark the rest as missing, and move on.
 
@@ -97,6 +97,8 @@ piotroski-eu-lakehouse/
 │   └── job_daily.yml
 ├── extract/                    # runs OUTSIDE Databricks (GH Actions / PC)
 │   ├── esef_filings.py         # list + download xBRL-JSON, write manifest
+│   ├── prices.py               # Sprint v0.2: daily prices, watermark per ticker
+│   ├── ecb_fx.py               # Sprint v0.2: ECB reference rates
 │   ├── gleif_isin.py
 │   └── upload_to_volume.sh
 ├── src/piotroski/              # pure Python, imported by pipeline + tests
@@ -104,6 +106,8 @@ piotroski-eu-lakehouse/
 │   ├── signals.py              # the 9 signals as functions on DataFrames
 │   └── dq.py                   # reconciliation rules
 ├── pipelines/                  # declarative pipeline definitions (bronze/silver/gold)
+├── dbt/                        # Sprint v0.2: dbt-databricks marts on gold
+├── airflow/                    # Sprint v0.2 (optional): local Docker Compose DAG
 ├── notebooks/                  # exploration only; never imported
 ├── tests/unit/  tests/fixtures/  # small hand-made JSON, NOT real downloads
 ├── docs/adr/  docs/architecture.md  docs/PLAN.md
@@ -171,7 +175,7 @@ Each day ends with a merged PR to `main`. If a day overruns by more than 2 hours
 - [x] `ci.yml` on PR: ruff, pytest, `databricks bundle validate -t dev`. Result: pre-commit (ruff), gitleaks-action, pytest, then `bundle validate` for dev and prod as the CI service principal; `test` is a required check on `main`.
 - [x] Move the `bronze`/`silver`/`gold` schemas and the landing volume into the bundle: `databricks bundle deployment bind` the existing objects, and check dev-mode naming first (ADR-003, moved from Day 3). Result: dev mode prefixes schema names (`dev_<user>_bronze`), so they are bundle resources in prod only, with `prevent_destroy`; dev keeps the CLI-created ones, nothing bound.
 - [x] `deploy.yml` on merge to `main`: `bundle deploy -t prod`, then `bundle run` of the job. Auth via a GitHub environment secret → **ADR-006** (service principal OAuth if Free Edition allows it, otherwise a short-lived PAT; write down which and why). Result: service principal OAuth M2M works on Free Edition (ADR-006); prod catalog bootstrapped with SQL. First prod deploy and job run green on 2026-10-18, after a bootstrap: deploy only, grants, upload, then `RUN_AFTER_DEPLOY` (ADR-003). The SDK auth error prints workspace and account IDs, so both workflows mask them (ADR-006).
-- [ ] ~~`extract.yml`~~ (cut): manual `workflow_dispatch` plus a monthly cron that runs the extractor and uploads to the prod volume. Not in the DoD: cut first if the day runs over. Cut on 2026-10-18. When it returns, it must fetch `manifest.jsonl` from the volume first, or a fresh runner re-downloads everything.
+- [ ] ~~`extract.yml`~~ (cut): manual `workflow_dispatch` plus a monthly cron that runs the extractor and uploads to the prod volume. Not in the DoD: cut first if the day runs over. Cut on 2026-10-18. When it returns, it must fetch `manifest.jsonl` from the volume first, or a fresh runner re-downloads everything. → Returns in Sprint v0.2 Day 1, on a weekly cron.
 - [x] A job in `resources/job_daily.yml`: pipeline refresh → DQ task → failure email notification. The DQ task appends `gold.dq_results` to a history table (one row per run per rule) and adds the expectation drop counts from the event log (moved from Day 5, ADR-009). Result: `piotroski_daily` (refresh → `dq_history`), event log published as `bronze.pipeline_event_log`, `gold.dq_results_history` tagged with `run_id`; first dev run green, 8 rules (3 expectations, 0 drops).
 
 ### Day 7 (Mon Oct 19): make it presentable
@@ -179,6 +183,62 @@ Each day ends with a merged PR to `main`. If a day overruns by more than 2 hours
 - [x] README: problem, the diagram, a results sample, how to run, limitations, an ADR index.
 - [x] AI/BI dashboard: score distribution, top 20, DQ failures over runs.
 - [x] Ask the reviewer agent for a full-repo review; fix the blocking comments.
+
+## Sprint v0.2 (Nov 11–17, 2026)
+
+**Goal:** close the dbt, incremental/CDC/SCD2 and orchestration gaps on the existing repo. These are the skills most often asked for in data-engineering job ads, and the CDC/SCD2 work maps directly onto SQL Server/SSIS → Databricks migrations. 7 days × 2–4 h, about 22 h.
+
+**Rules:** each day ends with a merged PR. If a day overruns by more than 1 h, cut scope from that day; don't push the remaining days back. **Days 2–3 are never cut.** Cut order if behind: Day 6 (Airflow) first, then `dbt build` in CI (Day 5).
+
+### Day 1 (3 h): prices extraction and a scheduled extract
+
+- [ ] 30-min spike: confirm a free daily price source still works for the ~89 listed DK tickers (Stooq first; it may now block scripted CSV downloads). Fallback: a manual Nasdaq Nordic CSV, recorded in the ADR. Never commit yfinance output.
+- [ ] Same spike: count coverage of `ifrs-full:NumberOfSharesIssued` and `ifrs-full:NumberOfSharesOutstanding` in `silver.fact`. Market cap needs a share count, and silver maps none yet.
+- [ ] `extract/prices.py`: incremental by watermark (last date per ticker from the manifest), idempotent, 1 req/s.
+- [ ] Bring back `extract.yml`: `workflow_dispatch` plus a weekly cron. Pull `manifest.jsonl` from the volume first, then extract, then upload. Drop the "Extraction is manual" limitation from the README.
+- [ ] **ADR-012**: price source and incremental strategy.
+
+### Day 2 (3–4 h): incremental silver with AUTO CDC
+
+- [ ] `bronze.price_raw` via Auto Loader.
+- [ ] `silver.price_daily`: AUTO CDC (`dp.create_auto_cdc_flow`), keys `(ticker, date)`, sequence by ingest timestamp, SCD type 1. Late corrections overwrite.
+- [ ] `shares_outstanding` canonical field in `concepts.py` and `silver.fundamentals` (concepts from the Day 1 spike). Missing means null market cap, never 0.
+- [ ] Unit test for the price-parsing function. Rerun the extract and prove there are no duplicates (DQ rule: unique ticker + date).
+
+### Day 3 (3 h): SCD2 listing dimension and a quarantine table
+
+- [ ] `silver.dim_listing`: AUTO CDC stored as SCD type 2 over OpenFIGI snapshots (ticker or exchange changes become history rows).
+- [ ] Replace the silent `expect_all_or_drop` on `silver.fundamentals` with a quarantine table (failed rows plus the reason) that feeds `gold.dq_results`.
+- [ ] **ADR-013**: drop vs quarantine.
+
+### Day 4 (3–4 h): FX and dbt on gold
+
+- [ ] `extract/ecb_fx.py` (DKK crosses, idempotent) plus a silver FX table. Convert equity to DKK at the fiscal-year-end rate, because some DK filers report in EUR or USD.
+- [ ] `dbt/` project: dbt-databricks against the Free Edition serverless SQL warehouse, profile from env vars (no secrets in the repo).
+- [ ] Sources: `silver.fundamentals`, `silver.price_daily`, silver FX, `gold.piotroski_score`.
+- [ ] Models: `market_cap`, `book_to_market`, `piotroski_screen` (top B/M quintile, F-score ≥ 8). This makes the screen match the original paper.
+- [ ] Tests: unique/not_null on keys, accepted_values on `f_score` 0–9, one singular test (market cap > 0).
+- [ ] **ADR-014**: FX conversion and the book-to-market definition.
+
+### Day 5 (3 h): dbt in CI and in the job
+
+- [ ] CI: `dbt deps && dbt parse`. Optional (cut first): `dbt build` against dev if the warehouse cold start is acceptable.
+- [ ] Bundle job: pipeline refresh → `dbt_task` (dbt build) → `dq_history`.
+- [ ] **ADR-015**: what goes in declarative pipelines vs dbt, and why (ingestion and CDC in the pipeline, business marts in dbt).
+
+### Day 6 (2–3 h, cut first): Airflow locally
+
+- [ ] Docker Compose Airflow on the home PC. One DAG: extract → upload → `DatabricksRunNowOperator` on `piotroski_daily`.
+- [ ] Token from an Airflow connection only, never in the repo. A short README section with a scrubbed screenshot.
+- [ ] **ADR-016**: Airflow vs GitHub Actions cron vs Databricks Jobs (GitHub Actions stays the default; say why).
+
+### Day 7 (2–3 h): make it presentable
+
+- [ ] README: updated diagram, screen results, ADR index, "what broke this sprint".
+- [ ] README: a feature → migration pattern table (AUTO CDC/MERGE ↔ SSIS incremental loads, SCD2 ↔ slowly changing dimension, quarantine ↔ error-output rows).
+- [ ] Dashboard: a screen tile.
+- [ ] Full-repo review by the reviewer agent; fix the blocking items.
+- [ ] Tag `v0.2.0`.
 
 ## Testing, data quality, CI/CD and monitoring
 
@@ -199,7 +259,7 @@ There are two bundle targets. `dev` deploys in development mode, so resource nam
 1. Feature branch → PR → `ci.yml`: ruff, pytest, `bundle validate`.
 2. Optional: comment `/deploy-dev` or run a manual workflow to deploy the PR to `dev`.
 3. Merge → `deploy.yml`: `bundle deploy -t prod` → `bundle run` of the job → workflow fails if the job fails.
-4. `extract.yml` runs separately on a monthly cron. Fundamentals change once or twice a year, and monthly picks up late filers.
+4. `extract.yml` runs separately on a weekly cron (Sprint v0.2). Fundamentals change once or twice a year, but prices change daily; weekly keeps prices fresh enough for a yearly screen and picks up late filers.
 
 ### Monitoring (scaled to a portfolio project)
 
@@ -225,7 +285,13 @@ Write ADRs as short Markdown files in `docs/adr/NNN-title.md` with four headings
 | 008 | Ticker source: OpenFIGI mapping, listing grain per ISIN | 3 |
 | 009 | Silver fact selection rules (prefixes, scope, annual filings, duplicates, restatements) | 4 |
 | 010 | `src/` shipped as a versioned wheel; dev-mode pipelines off | 4 |
-| 011+ | One per Free Edition limit you actually hit, with the error message | as hit |
+| 011 | Dashboard as code in the bundle | 7 |
+| 012 | Price source and incremental extraction strategy (planned) | v0.2 Day 1 |
+| 013 | Drop vs quarantine for failed silver rows (planned) | v0.2 Day 3 |
+| 014 | FX conversion and book-to-market definition (planned) | v0.2 Day 4 |
+| 015 | Declarative pipelines vs dbt: what goes where (planned) | v0.2 Day 5 |
+| 016 | Airflow vs GitHub Actions cron vs Databricks Jobs (planned) | v0.2 Day 6 |
+| 017+ | One per Free Edition limit you actually hit, with the error message | as hit |
 
 ### Commit and PR hygiene
 
@@ -251,9 +317,9 @@ Each milestone is about 2–4 days and starts only after the previous one is mer
    - [x] Dashboard: a "Not financial advice, see the README" text widget. Result: added straight to the JSON as a full-width text widget at the top, as a `####` heading so it reads one size above body text.
    - [x] `deploy.yml`: `paths-ignore` for docs-only changes (`docs/**`, `**.md`), so a README edit doesn't redeploy prod and re-run the job. A push that changes code as well still deploys.
 
-1. **v0.2: prices and market cap.** Stooq daily prices, ECB FX, `gold.market_cap`. Piotroski's original screen ranks only the highest book-to-market quintile, so this makes the score faithful. It's also the first incremental, daily-changing source, which is a chance to use MERGE / SCD on top of the one-off fundamentals.
+1. **v0.2: prices, CDC/SCD2, dbt and orchestration** → [Sprint v0.2](#sprint-v02-nov-1117-2026) above.
 2. **v0.3: rate-limited ticker API (your idea).** A queue table of tickers, a daily job pulling N tickers within the free quota, watermark and retry state stored in Delta. It shows backfill under quotas, a very common real-world pattern. Use it as a cross-check source against ESEF (source-vs-source reconciliation report).
 3. **v0.4: more scores.** Altman Z, Magic Formula, Beneish M on the same silver. If the silver model was right, each one is about a day. If it's painful, that's a talking point about the model too.
 4. **v0.5: second country.** Tests whether `concepts.py` generalises. Expect new extension tags.
-5. **v0.6: dbt on gold** (dbt-databricks) as a comparison with declarative pipelines, plus **Terraform** for workspace objects, catalogs and grants. This closes the secondary-goal gaps.
+5. **Backlog: Terraform** for workspace objects, catalogs and grants. Low value here: Free Edition blocks catalog creation over the API (ADR-003), and bundles already deploy everything else. dbt moved into Sprint v0.2.
 6. **Optional: AWS.** S3 landing + Lambda extractor via Terraform, only if a Free Edition limit forces it.
