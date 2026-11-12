@@ -1,0 +1,54 @@
+name: extract
+
+on:
+  schedule:
+    - cron: "0 6 * * 6"   # Saturdays 06:00 UTC: picks up Monday–Friday closes
+  workflow_dispatch:
+
+concurrency:
+  group: extract-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      MASK_WORKSPACE_ID: ${{ secrets.MASK_WORKSPACE_ID }}   # never used; referencing it makes GitHub mask it in logs
+      MASK_ACCOUNT_ID: ${{ secrets.MASK_ACCOUNT_ID }}
+      LANDING: dbfs:/Volumes/piotroski_prod/bronze/landing
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - uses: databricks/setup-cli@v1.21.0
+
+      - name: Check credentials
+        run: databricks current-user me > /dev/null
+
+      - name: Pull state from the volume
+        run: |
+          mkdir -p data/landing/prices
+          databricks fs cp -r "$LANDING/openfigi" data/landing/openfigi
+          if databricks fs ls "$LANDING/prices" 2>/dev/null | grep -qx manifest.jsonl; then
+            databricks fs cp "$LANDING/prices/manifest.jsonl" data/landing/prices/manifest.jsonl
+          else
+            echo "::notice::No prices manifest in the volume yet: full backfill from 2019"
+          fi
+
+      - name: Extract prices
+        run: uv run python -m extract.prices
+
+      - name: Upload prices
+        if: ${{ !cancelled() }}
+        run: bash extract/upload_to_volume.sh piotroski_prod prices

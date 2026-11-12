@@ -192,17 +192,17 @@ Each day ends with a merged PR to `main`. If a day overruns by more than 2 hours
 
 ### Day 1 (3 h): prices extraction and a scheduled extract
 
-- [ ] 30-min spike: confirm a free daily price source still works for the ~89 listed DK tickers (Stooq first; it may now block scripted CSV downloads). Fallback: a manual Nasdaq Nordic CSV, recorded in the ADR. Never commit yfinance output.
-- [ ] Same spike: count coverage of `ifrs-full:NumberOfSharesIssued` and `ifrs-full:NumberOfSharesOutstanding` in `silver.fact`. Market cap needs a share count, and silver maps none yet.
+- [x] 30-min spike: confirm a free daily price source still works for the ~89 listed DK tickers (Stooq first; it may now block scripted CSV downloads). Fallback: a manual Nasdaq Nordic CSV, recorded in the ADR. Never commit yfinance output. Result: Stooq is behind a bot check. The Nasdaq Nordic JSON API works without a key: ISIN → `orderbookId` → daily prices in DKK back to 2019 (ADR-012).
+- [x] Same spike: count coverage of `ifrs-full:NumberOfSharesIssued` and `ifrs-full:NumberOfSharesOutstanding` in `silver.fact`. Market cap needs a share count, and silver maps none yet. Result: tagged counts cover 4 of 302 LEIs. EPS-implied shares (owners' profit, falling back to `ProfitLoss`, / basic EPS) cover 86 of 89 listed LEIs (ADR-012).
 - [ ] `extract/prices.py`: incremental by watermark (last date per ticker from the manifest), idempotent, 1 req/s.
 - [ ] Bring back `extract.yml`: `workflow_dispatch` plus a weekly cron. Pull `manifest.jsonl` from the volume first, then extract, then upload. Drop the "Extraction is manual" limitation from the README.
-- [ ] **ADR-012**: price source and incremental strategy.
+- [x] **ADR-012**: price source and incremental strategy, plus the share count.
 
 ### Day 2 (3–4 h): incremental silver with AUTO CDC
 
 - [ ] `bronze.price_raw` via Auto Loader.
 - [ ] `silver.price_daily`: AUTO CDC (`dp.create_auto_cdc_flow`), keys `(ticker, date)`, sequence by ingest timestamp, SCD type 1. Late corrections overwrite.
-- [ ] `shares_outstanding` canonical field in `concepts.py` and `silver.fundamentals` (concepts from the Day 1 spike). Missing means null market cap, never 0.
+- [ ] `profit_owners` (owners' profit, falling back to `ProfitLoss`) and `basic_eps` in `concepts.py`, then `shares_implied` in `silver.fundamentals` with a guard for EPS near zero (ADR-012). Missing means null market cap, never 0.
 - [ ] Unit test for the price-parsing function. Rerun the extract and prove there are no duplicates (DQ rule: unique ticker + date).
 
 ### Day 3 (3 h): SCD2 listing dimension and a quarantine table
@@ -286,7 +286,7 @@ Write ADRs as short Markdown files in `docs/adr/NNN-title.md` with four headings
 | 009 | Silver fact selection rules (prefixes, scope, annual filings, duplicates, restatements) | 4 |
 | 010 | `src/` shipped as a versioned wheel; dev-mode pipelines off | 4 |
 | 011 | Dashboard as code in the bundle | 7 |
-| 012 | Price source and incremental extraction strategy (planned) | v0.2 Day 1 |
+| 012 | Price source (Nasdaq Nordic API), EPS-implied shares, incremental extraction | v0.2 Day 1 |
 | 013 | Drop vs quarantine for failed silver rows (planned) | v0.2 Day 3 |
 | 014 | FX conversion and book-to-market definition (planned) | v0.2 Day 4 |
 | 015 | Declarative pipelines vs dbt: what goes where (planned) | v0.2 Day 5 |

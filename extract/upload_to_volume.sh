@@ -2,4 +2,6 @@
 set -euo pipefail
 
 CATALOG="${1:-piotroski_dev}"
-databricks fs cp -r --overwrite data/landing "dbfs:/Volumes/${CATALOG}/bronze/landing"
+SOURCE="${2:-}"   # optional: one source folder, e.g. prices; default is everything
+databricks fs cp -r --overwrite "data/landing${SOURCE:+/$SOURCE}" \
+  "dbfs:/Volumes/${CATALOG}/bronze/landing${SOURCE:+/$SOURCE}"
