@@ -124,7 +124,10 @@ def run(session, landing_dir: Path, today: date, delay: float = 1.0, sleep=time.
     watermarks = load_watermarks(manifest_path)
     counts = {"new": 0, "up_to_date": 0, "no_data": 0, "not_found": 0, "failed": 0}
 
-    for isin in listed_isins(latest_listings(landing_dir)):
+    isins = listed_isins(latest_listings(landing_dir))
+    for i, isin in enumerate(isins, start=1):
+        if i % 10 == 0:
+            print(f"{i}/{len(isins)} ISINs", flush=True)
         window = fetch_window(watermarks.get(isin), today)
         if window is None:
             counts["up_to_date"] += 1
